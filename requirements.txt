@@ -11,3 +11,7 @@ ffmpeg-python>=0.2.0
 safetensors
 soundfile
 DeepCache
+# Added by olyanimationstudios/Vox fork — referenced by latentsync/ pipeline
+# but missing from upstream. See closed issue #235.
+insightface
+onnxruntime-gpu
