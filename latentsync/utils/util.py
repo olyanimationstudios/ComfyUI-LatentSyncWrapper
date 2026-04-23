@@ -113,16 +113,35 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 
 def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
-    with imageio.get_writer(
-        video_output_path,
-        fps=fps,
-        codec="libx264",
-        macro_block_size=None,
-        ffmpeg_params=["-crf", "13"],
-        ffmpeg_log_level="error",
-    ) as writer:
-        for video_frame in video_frames:
-            writer.append_data(video_frame)
+    # PATCH (olyanimationstudios/Vox 2026-04-23):
+    #   imageio v3's PyAVPlugin.write no longer accepts macro_block_size /
+    #   ffmpeg_params / ffmpeg_log_level — those were imageio v2 kwargs.
+    #   Replaced with direct PyAV encoding (pyav already a transitive dep).
+    #   Keeps same contract: H.264 MP4 at requested fps, yuv420p for
+    #   broad compatibility.
+    import av
+    frames = video_frames
+    if not isinstance(frames, np.ndarray):
+        frames = np.asarray(frames)
+    if frames.dtype != np.uint8:
+        if frames.max() <= 1.0:
+            frames = (frames * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            frames = frames.clip(0, 255).astype(np.uint8)
+    container = av.open(video_output_path, mode="w")
+    stream = container.add_stream("h264", rate=int(fps))
+    stream.width = int(frames.shape[2])
+    stream.height = int(frames.shape[1])
+    stream.pix_fmt = "yuv420p"
+    # The original used crf=13 (very high quality). PyAV equivalent:
+    stream.options = {"crf": "13"}
+    for frame_np in frames:
+        av_frame = av.VideoFrame.from_ndarray(frame_np, format="rgb24")
+        for pkt in stream.encode(av_frame):
+            container.mux(pkt)
+    for pkt in stream.encode():
+        container.mux(pkt)
+    container.close()
 
 
 def write_video_cv2(video_output_path: str, video_frames: np.ndarray, fps: int):
