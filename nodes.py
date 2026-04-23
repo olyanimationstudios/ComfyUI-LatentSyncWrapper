@@ -694,14 +694,17 @@ class LatentSyncNode:
 
             # Read the processed video - ensure it's loaded as CPU tensor
             # PATCH (olyanimationstudios/Vox 2026-04-23):
-            #   The original code relied on `io.read_video` where `io` was
-            #   `import torchvision.io as io` inside the earlier try-except
-            #   block. Our save-path patch removed that try-except, which also
-            #   removed the `io` alias — and `read_video` itself is fine in
-            #   current torchvision, so we just re-import here. (Had it been
-            #   removed upstream too we'd swap in decord or PyAV.)
-            import torchvision.io as _tvio
-            processed_frames = _tvio.read_video(output_video_path, pts_unit='sec')[0]
+            #   Both `torchvision.io.write_video` AND `read_video` were removed
+            #   in modern torchvision (>=0.20). Using decord (already a wrapper
+            #   dependency via requirements.txt). decord's VideoReader returns
+            #   frames in (T, H, W, 3) uint8 — the same shape torchvision.io
+            #   used to return as .pts[0]. Wrap as a torch tensor to match
+            #   the downstream `.float() / 255.0` call.
+            import decord as _decord
+            import torch as _torch
+            _vr = _decord.VideoReader(output_video_path, ctx=_decord.cpu(0))
+            _arr = _vr.get_batch(range(len(_vr))).asnumpy()  # (T, H, W, 3) uint8
+            processed_frames = _torch.from_numpy(_arr)
             processed_frames = processed_frames.float() / 255.0
 
             # Ensure audio is on CPU before returning
