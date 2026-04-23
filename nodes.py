@@ -320,7 +320,17 @@ def pre_download_models():
     # Use a persistent location for model cache instead of temporary directory
     # This ensures models are downloaded only once across all runs
     user_home = os.path.expanduser("~")
-    persistent_cache_dir = os.path.join(user_home, ".latentsync16_models")
+    # PATCH (olyanimationstudios/Vox 2026-04-23):
+    #   Prefer the shared volume's models dir when present — that way the
+    #   ~10GB LatentSync + SD-VAE weights are downloaded ONCE per volume and
+    #   reused by every pod. $HOME is container-local → one-time download
+    #   PER POD, which is wasteful on a fleet-shared volume setup. Falls
+    #   back to $HOME when no volume is mounted (e.g. smoke tests, CI).
+    _VOLUME_LATENTSYNC = "/workspace/runpod-volume/runpod-slim/ComfyUI/models/latentsync"
+    if os.path.isdir(os.path.dirname(_VOLUME_LATENTSYNC)):
+        persistent_cache_dir = _VOLUME_LATENTSYNC
+    else:
+        persistent_cache_dir = os.path.join(user_home, ".latentsync16_models")
     os.makedirs(persistent_cache_dir, exist_ok=True)
     
     for model_name, url in models.items():
