@@ -49,8 +49,15 @@ def read_video(video_path: str, change_fps=True, use_decord=True):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
+        # PATCH (olyanimationstudios/Vox 2026-04-23):
+        #   Default x264 preset is slow on 1080x1920 — single-core ffmpeg took
+        #   >5 min on a 4-second clip during WU-007 smoke. Adding
+        #   -preset ultrafast -threads 0 cuts this to seconds without
+        #   materially affecting a pipeline-intermediate transcode (output
+        #   is re-encoded again at end).
         command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
+            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -preset ultrafast -threads 0 -crf 18 "
+            f"{os.path.join(temp_dir, 'video.mp4')}"
         )
         subprocess.run(command, shell=True)
         target_video_path = os.path.join(temp_dir, "video.mp4")
