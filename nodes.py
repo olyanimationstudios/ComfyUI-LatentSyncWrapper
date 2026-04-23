@@ -565,36 +565,49 @@ class LatentSyncNode:
             }
             
             # Move waveform to CPU for saving
+            # PATCH (olyanimationstudios/Vox 2026-04-23):
+            #   torchaudio.save on modern torchaudio (>=2.1) routes to
+            #   save_with_torchcodec which requires the torchcodec package.
+            #   Use soundfile directly — it's already in our requirements.txt and
+            #   handles WAV cleanly without extra native dependencies.
             waveform_cpu = waveform.cpu()
-            torchaudio.save(audio_path, waveform_cpu, sample_rate)
+            import soundfile as sf
+            import numpy as np
+            _wf_np = waveform_cpu.numpy() if hasattr(waveform_cpu, 'numpy') else np.asarray(waveform_cpu)
+            # soundfile expects (samples,) mono or (samples, channels) multi.
+            # torchaudio gives (channels, samples). Transpose if 2D.
+            if _wf_np.ndim == 2:
+                _wf_np = _wf_np.T
+            sf.write(audio_path, _wf_np, sample_rate)
 
             # Move frames to CPU for saving to video
+            # PATCH (olyanimationstudios/Vox 2026-04-23):
+            #   torchvision.io.write_video was removed in recent torchvision
+            #   (>=0.20). The original try/except only catches TypeError, not
+            #   AttributeError. Use PyAV directly — same code as the original
+            #   fallback, plus pix_fmt='yuv420p' for H.264 compatibility and
+            #   explicit encoder flush loops (stream.encode() returns a list).
             frames_cpu = frames.cpu()
-            try:
-                import torchvision.io as io
-                io.write_video(temp_video_path, frames_cpu, fps=25, video_codec='h264')
-            except TypeError as e:
-                # Check if the error is specifically about macro_block_size
-                if "macro_block_size" in str(e):
-                    import imageio
-                    # Use imageio with macro_block_size parameter
-                    imageio.mimsave(temp_video_path, frames_cpu.numpy(), fps=25, codec='h264', macro_block_size=1)
+            import av
+            import numpy as np
+            _frames_np = frames_cpu.numpy() if hasattr(frames_cpu, 'numpy') else np.asarray(frames_cpu)
+            if _frames_np.dtype != np.uint8:
+                if _frames_np.max() <= 1.0:
+                    _frames_np = (_frames_np * 255.0).clip(0, 255).astype(np.uint8)
                 else:
-                    # Fall back to original PyAV code for other TypeError issues
-                    import av
-                    container = av.open(temp_video_path, mode='w')
-                    stream = container.add_stream('h264', rate=25)
-                    stream.width = frames_cpu.shape[2]
-                    stream.height = frames_cpu.shape[1]
-
-                    for frame in frames_cpu:
-                        frame = av.VideoFrame.from_ndarray(frame.numpy(), format='rgb24')
-                        packet = stream.encode(frame)
-                        container.mux(packet)
-
-                    packet = stream.encode(None)
-                    container.mux(packet)
-                    container.close()
+                    _frames_np = _frames_np.clip(0, 255).astype(np.uint8)
+            container = av.open(temp_video_path, mode='w')
+            stream = container.add_stream('h264', rate=25)
+            stream.width = _frames_np.shape[2]
+            stream.height = _frames_np.shape[1]
+            stream.pix_fmt = 'yuv420p'
+            for _f in _frames_np:
+                _vf = av.VideoFrame.from_ndarray(_f, format='rgb24')
+                for _pkt in stream.encode(_vf):
+                    container.mux(_pkt)
+            for _pkt in stream.encode():
+                container.mux(_pkt)
+            container.close()
 
             # Define paths to required files and configs
             inference_script_path = os.path.join(cur_dir, "scripts", "inference.py")
