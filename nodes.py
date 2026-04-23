@@ -691,9 +691,17 @@ class LatentSyncNode:
             # Verify output file exists
             if not os.path.exists(output_video_path):
                 raise FileNotFoundError(f"Output video not found at: {output_video_path}")
-            
+
             # Read the processed video - ensure it's loaded as CPU tensor
-            processed_frames = io.read_video(output_video_path, pts_unit='sec')[0]
+            # PATCH (olyanimationstudios/Vox 2026-04-23):
+            #   The original code relied on `io.read_video` where `io` was
+            #   `import torchvision.io as io` inside the earlier try-except
+            #   block. Our save-path patch removed that try-except, which also
+            #   removed the `io` alias — and `read_video` itself is fine in
+            #   current torchvision, so we just re-import here. (Had it been
+            #   removed upstream too we'd swap in decord or PyAV.)
+            import torchvision.io as _tvio
+            processed_frames = _tvio.read_video(output_video_path, pts_unit='sec')[0]
             processed_frames = processed_frames.float() / 255.0
 
             # Ensure audio is on CPU before returning
