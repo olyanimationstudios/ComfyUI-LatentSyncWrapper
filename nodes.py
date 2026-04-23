@@ -389,34 +389,79 @@ def setup_models():
         os.makedirs(os.path.dirname(whisper_path), exist_ok=True)
         shutil.copy2(cache_whisper_path, whisper_path)
 
-    # Only download if models aren't in the working directory and weren't in the cache
-    if not (os.path.exists(unet_path) and os.path.exists(whisper_path)):
-        print("Downloading required LatentSync 1.6 model checkpoints... This may take a while.")
+    # PATCH (olyanimationstudios/Vox 2026-04-23):
+    #   Upstream setup_models only downloaded latentsync_unet.pt + whisper/tiny.pt.
+    #   Missing: stable_syncnet.pt, auxiliary/* (6 files, ~2.9GB), AND the VAE
+    #   weights that the UNet decodes latents through. Without the VAE, the
+    #   inpainted mouth region is decoded from random init → visible as a
+    #   glittery rainbow mask in the mouth. That's what caused WU-007 smoke
+    #   to produce valid-shaped MP4s with corrupted inpaint regions.
+    #
+    #   This expanded download fetches every file LatentSync's inference path
+    #   touches, including the VAE and syncnet. First-run cost: ~10GB download
+    #   vs the previous ~5GB, but inference actually works.
+    stable_syncnet_target = os.path.join(ckpt_dir, "stable_syncnet.pt")
+    vae_target_dir = os.path.join(ckpt_dir, "vae")
+    auxiliary_target_dir = os.path.join(ckpt_dir, "auxiliary")
+    needs_download = not (
+        os.path.exists(unet_path)
+        and os.path.exists(whisper_path)
+        and os.path.exists(stable_syncnet_target)
+        and os.path.isdir(vae_target_dir)
+        and os.path.isdir(auxiliary_target_dir)
+    )
+    if needs_download:
+        print("Downloading LatentSync 1.6 model set (unet + syncnet + auxiliary + whisper + vae)...")
         try:
             from huggingface_hub import snapshot_download
-            
-            # Download to the persistent cache first
-            snapshot_download(repo_id="ByteDance/LatentSync-1.6",
-                            allow_patterns=["latentsync_unet.pt", "whisper/tiny.pt"],
-                            local_dir=persistent_cache_dir, 
-                            local_dir_use_symlinks=False,
-                            cache_dir=temp_downloads)
-            
-            # Then copy to the working directory if needed
-            if not os.path.exists(unet_path) and os.path.exists(os.path.join(persistent_cache_dir, "latentsync_unet.pt")):
-                shutil.copy2(os.path.join(persistent_cache_dir, "latentsync_unet.pt"), unet_path)
-            
-            cache_whisper_tiny = os.path.join(persistent_cache_dir, "whisper/tiny.pt")
-            if not os.path.exists(whisper_path) and os.path.exists(cache_whisper_tiny):
-                os.makedirs(os.path.dirname(whisper_path), exist_ok=True)
-                shutil.copy2(cache_whisper_tiny, whisper_path)
-                
-            print("LatentSync 1.6 model checkpoints downloaded successfully!")
+
+            # Full LatentSync-1.6 repo except training-only files.
+            snapshot_download(
+                repo_id="ByteDance/LatentSync-1.6",
+                allow_patterns=[
+                    "latentsync_unet.pt",
+                    "stable_syncnet.pt",
+                    "whisper/*",
+                    "auxiliary/*",
+                    "config.json",
+                ],
+                local_dir=persistent_cache_dir,
+                local_dir_use_symlinks=False,
+                cache_dir=temp_downloads,
+            )
+
+            # VAE: LatentSync 1.6 expects the Stable Diffusion 1.5 VAE.
+            vae_cache = os.path.join(persistent_cache_dir, "vae")
+            if not (os.path.exists(os.path.join(vae_cache, "diffusion_pytorch_model.safetensors"))
+                    and os.path.exists(os.path.join(vae_cache, "config.json"))):
+                os.makedirs(vae_cache, exist_ok=True)
+                snapshot_download(
+                    repo_id="stabilityai/sd-vae-ft-mse",
+                    allow_patterns=["diffusion_pytorch_model.safetensors", "config.json"],
+                    local_dir=vae_cache,
+                    local_dir_use_symlinks=False,
+                    cache_dir=temp_downloads,
+                )
+
+            # Copy each required artifact from persistent_cache_dir into ckpt_dir
+            for rel in ("latentsync_unet.pt", "stable_syncnet.pt", "config.json"):
+                src = os.path.join(persistent_cache_dir, rel)
+                dst = os.path.join(ckpt_dir, rel)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                    shutil.copy2(src, dst)
+            for subdir in ("whisper", "auxiliary", "vae"):
+                src_dir = os.path.join(persistent_cache_dir, subdir)
+                dst_dir = os.path.join(ckpt_dir, subdir)
+                if os.path.isdir(src_dir) and not os.path.isdir(dst_dir):
+                    shutil.copytree(src_dir, dst_dir)
+
+            print("LatentSync 1.6 full model set downloaded + staged.")
         except Exception as e:
             print(f"Error downloading models: {str(e)}")
             print("\nPlease download models manually:")
-            print("1. Visit: https://huggingface.co/ByteDance/LatentSync-1.6")
-            print("2. Download: latentsync_unet.pt and whisper/tiny.pt")
+            print("1. https://huggingface.co/ByteDance/LatentSync-1.6 — latentsync_unet.pt, stable_syncnet.pt, whisper/*, auxiliary/*, config.json")
+            print("2. https://huggingface.co/stabilityai/sd-vae-ft-mse — diffusion_pytorch_model.safetensors, config.json → ./checkpoints/vae/")
             print(f"3. Place them in: {ckpt_dir}")
             print(f"   with whisper/tiny.pt in: {whisper_dir}")
             raise RuntimeError("Model download failed. See instructions above.")
